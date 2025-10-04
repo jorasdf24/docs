@@ -18,8 +18,6 @@ Get your documentation site running locally and make your first customization.
    ```
 
    The project is a Node.js workspace with scripts defined in `package.json`. Use your preferred package manager if not npm.
-
-
 1. **Configure environment variables**\
    Create `.env.local` (and `.env` for server-only secrets) with the following keys:
 
@@ -69,4 +67,39 @@ Get your documentation site running locally and make your first customization.
 
    The development server defaults to `http://localhost:3000`. Build and production scripts are also available (`npm run build`, `npm run start`).
 
-### 
+### **<u>Set up pricing plans:</u>**
+
+After setting up a paddle account, adding a webhook, and creating server and client API keys, do the following:
+
+Add items in paddle dashboard:
+
+- Add free, add monthly/yearly price at 0\$, description “free”
+- Add 3 more products, for each one add monthly & yearly prices, with description of the name of the item “starter monthly”
+- Most important the description needs to contain the item name
+
+**<u>Update lib/billing-sdk-config.ts:</u>**
+
+- Change the priceId of all items to their respective in paddle dashboard
+- make the id and title the same, and make sure they are the same as in the paddle dashboard
+
+**<u>Update constants/pricing-tier.ts:</u>**
+
+- Change the names and id, keep the same order as in previous file
+- change price ids
+- make sure both of the files have the same plans, in the same order!
+- make  sure they have the same number of plans
+
+<Check>
+  Finally, change the description and features of the plans.
+</Check>
+
+### **<u>Set up application mail:</u>**
+
+- In constants/email-constants.ts , update the APPLICATION_EMAIL, the mail needs to be in a bought domain, and needs to be added in resend dashboard
+
+### **<u>TRPC Routes notes:</u>**
+
+<Note>
+  - In trpc/init.ts , you need to configure the premium entities (for example if it's a scanning app it will probably be scans).
+  - This procedure needs to throw an unauthorized error if the requested operation exceeds the current plan of the user. Examples for the implementation can be found in the second video of MeetAI by Code With Antonio Youtube channel, in the payment section
+</Note>

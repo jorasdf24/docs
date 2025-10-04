@@ -1,110 +1,240 @@
 ---
 title: "Reusable snippets"
-description: "Reusable, custom snippets to keep content in sync"
+description: "Reusable useful snippets to speed up your development"
 icon: "recycle"
 ---
 
 import SnippetIntro from '/snippets/snippet-intro.mdx';
 
-<SnippetIntro />
+## Basic React
 
-## Creating a custom snippet
+### Basic server compontnt with session validation
 
-**Pre-condition**: You must create your snippet file in the `snippets` directory.
+```tsx
+import { auth } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 
-<Note>
-  Any page in the `snippets` directory will be treated as a snippet and will not
-  be rendered into a standalone page. If you want to create a standalone page
-  from the snippet, import the snippet into another file and call it as a
-  component.
-</Note>
+const Page = async () => {
 
-### Default export
+  const session = await auth.api.getSession({
+    headers: await headers(),
+  })
 
-1. Add content to your snippet file that you want to re-use across multiple
-   locations. Optionally, you can add variables that can be filled in via props
-   when you import the snippet.
+  if(!session){
+    redirect("/sign-in")
+  }
 
-```mdx snippets/my-snippet.mdx
-Hello world! This is my content I want to reuse across pages. My keyword of the
-day is {word}.
+  return (
+	<div>
+	Hello world
+	<div/>
+  )
+	
+}
+ 
+export default Page;
 ```
 
-<Warning>
-  The content that you want to reuse must be inside the `snippets` directory in
-  order for the import to work.
-</Warning>
+### Loading and error states for client compoenents
 
-2. Import the snippet into your destination file.
+```tsx
+export const MeetingIdViewError = () => {
+  return (
+    <ErrorState
+      title="Error loading Meetings"
+      description="Something went wrong"
+    ></ErrorState>
+  );
+};
 
-```mdx destination-file.mdx
----
-title: My title
-description: My Description
----
-
-import MySnippet from '/snippets/path/to/my-snippet.mdx';
-
-## Header
-
-Lorem impsum dolor sit amet.
-
-<MySnippet word="bananas" />
+export const MeetingIdViewLoading = () => {
+  return (
+    <LoadingState
+      title="Loading Meetings"
+      description="This may take a few seconds"
+    ></LoadingState>
+  );
+};
 ```
 
-### Reusable variables
+## TRPC Client
 
-1. Export a variable from your snippet file:
+### setting up trpc in a client component
 
-```mdx snippets/path/to/custom-variables.mdx
-export const myName = 'my name';
+```tsx
+const trpc = useTRPC();
+const queryClient = useQueryClient();
 
-export const myObject = { fruit: 'strawberries' };
-```
-
-2. Import the snippet from your destination file and use the variable:
-
-```mdx destination-file.mdx
----
-title: My title
-description: My Description
----
-
-import { myName, myObject } from '/snippets/path/to/custom-variables.mdx';
-
-Hello, my name is {myName} and I like {myObject.fruit}.
-```
-
-### Reusable components
-
-1. Inside your snippet file, create a component that takes in props by exporting
-   your component in the form of an arrow function.
-
-```mdx snippets/custom-component.mdx
-export const MyComponent = ({ title }) => (
-  <div>
-    <h1>{title}</h1>
-    <p>... snippet content ...</p>
-  </div>
+const { data } = useSuspenseQuery(
+    trpc.meetings.getOne.queryOptions({ id: meetingId })
 );
 ```
 
-<Warning>
-  MDX does not compile inside the body of an arrow function. Stick to HTML
-  syntax when you can or use a default export if you need to use MDX.
-</Warning>
+### Setting up a mutation in a client component
 
-2. Import the snippet into your destination file and pass in the props
+The snippet also show how to invalidate after a mutation
 
-```mdx destination-file.mdx
----
-title: My title
-description: My Description
----
+```tsx
+const mutationName = useMutation(
+    trpc.meetings.remove.mutationOptions({
+      onSuccess: () => {
+        queryClient.invalidateQueries(trpc.meetings.getMany.queryOptions({}));
+        router.push("/app/meetings");
+        // TODO: invalidate free tier usage
+      },
+      onError: (error) => {
+        toast.error(error.message);
+      },
+    })
+  );
+```
 
-import { MyComponent } from '/snippets/custom-component.mdx';
+## TRPC Procedures
 
-Lorem ipsum dolor sit amet.
+## Creating procedure
 
-<MyComponent title={'Custom title'} />
+```tsx
+create: protectedProcedure
+    .input(agentsInsertSchema)
+    .mutation(async ({ input, ctx }) => {
+      const [createdAgent] = await db
+        .insert(agents)
+        .values({
+          ...input,
+          userId: ctx.auth.user.id,
+        })
+        .returning();
+
+      return createdAgent;
+    }),
+```
+
+### Get One procedure
+
+```tsx
+ getOne: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .query(async ({ input, ctx }) => {
+      const [existingAgent] = await db
+        .select({
+          // TODO: change to actual count
+          meetingCount: sql<number>`5`,
+          ...getTableColumns(agents),
+        })
+        .from(agents)
+        .where(
+          and(eq(agents.id, input.id), eq(agents.userId, ctx.auth.user.id))
+        );
+
+      if (!existingAgent) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      }
+
+      return existingAgent;
+    }),
+```
+
+### Get many procedure with pagination and filtering
+
+```typescript
+getMany: protectedProcedure
+    .input(
+      z.object({
+        page: z.number().default(DEFAULT_PAGE),
+        pageSize: z
+          .number()
+          .min(MIN_PAGE_SIZE)
+          .max(MAX_PAGE_SIZE)
+          .default(DEFAULT_PAGE_SIZE),
+        search: z.string().nullish(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { search, page, pageSize } = input;
+
+      const data = await db
+        .select({
+          // TODO: change to actual count
+          meetingCount: sql<number>`5`,
+          ...getTableColumns(agents),
+        })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.userId, ctx.auth.user.id),
+            search ? ilike(agents.name, `%${search}%`) : undefined
+          )
+        )
+        .orderBy(desc(agents.createdAt), desc(agents.id))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize);
+
+      const [total] = await db
+        .select({ count: count() })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.userId, ctx.auth.user.id),
+            search ? ilike(agents.name, `%${search}%`) : undefined
+          )
+        );
+
+      const totalPages = Math.ceil(total.count / pageSize);
+
+      return {
+        items: data,
+        total: total.count,
+        totalPages,
+      };
+    }),
+```
+
+### Remove procedure
+
+```typescript
+remove: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const [removeAgent] = await db
+        .delete(agents)
+        .where(
+          and(eq(agents.id, input.id), eq(agents.userId, ctx.auth.user.id))
+        )
+        .returning();
+
+      if (!removeAgent) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Agent not found",
+        });
+      }
+
+      return removeAgent;
+    }),
+```
+
+### Updating procedure
+
+```typescript
+update: protectedProcedure
+    .input(agentsUpdateSchema)
+    .mutation(async ({ ctx, input }) => {
+      const [updatedAgent] = await db
+        .update(agents)
+        .set(input)
+        .where(
+          and(eq(agents.id, input.id), eq(agents.userId, ctx.auth.user.id))
+        )
+        .returning();
+
+      if (!updatedAgent) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Agent not found",
+        });
+      }
+
+      return updatedAgent;
+    }),
 ```
