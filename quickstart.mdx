@@ -1,11 +1,7 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Get start build quickly"
 ---
-
-## Get started in three steps
-
-Get your documentation site running locally and make your first customization.
 
 ### Steps for setting up your project:
 
@@ -34,6 +30,18 @@ Get your documentation site running locally and make your first customization.
    | `NEXT_PUBLIC_STREAM_VIDEO_API_KEY`                           | Stream Video public key for browser clients.                                     |
    | `STREAM_VIDEO_SECRET_KEY`                                    | Stream Video server secret for webhook verification and token minting.           |
    | `OPENAI_API_KEY`                                             | OpenAI key for meeting summaries and realtime agent sessions.                    |
+
+   <Info>
+     - DATABASE_URL is using Neon, so you can create api key there
+     - BETTER_AUTH_SECRET can be created through the better auth docs
+     - Resend API is the mail provider, and can be created through the resend account
+     - Google client ID and SECRET can be created through Google Console. Add an app and then create this from there
+     - Github is probably not relevant, but you can create the key from github 
+     - open api key is created from openAI API page 
+     - Ngrok url is created through ngrok website 
+     - Paddle apis are different in development and production, so you need the webhook secret, api key, and server api key 
+     - change Next public paddle env depending on wether you in production or dev (sandbox is for dev mode)
+   </Info>
 2. **Run database migrations**
 
    ```
