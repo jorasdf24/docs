@@ -1,0 +1,72 @@
+---
+title: "Setting up file storage with S3"
+description: "A guide for configuring S3 bucket for the first time  "
+---
+
+### Create AWS account
+
+Create a new AWS account if you don't have one already.
+
+### Create a new IAM user
+
+Create a new user, and set the Premmission Boundary to be AmazonS3FullAccess. Add more boundaries if you need more.
+
+Add a premmision policy of AmazonS3FullAccess to the new user.
+
+### Configure environment variables
+
+Add:
+
+```dotenv
+WS_ACCESS_KEY_ID=""
+
+AWS_SECRET_ACCESS_KEY=""
+```
+
+Go to your new user's security credentials, and create new access keys. For your local dev env, choose the local code option. **Change this to outside of AWS when going to prod.** Copy those to the env variables.
+
+### Create a new bucket
+
+Create a new bucket. Don't allow public access and leave default settings. Make sure the name is unique. 
+
+Add to your env:
+
+```dotenv
+AWS_REGION=""
+AWS_S3_BUCKET_NAME=""
+```
+
+Get those values from the properties tab of the bucket.
+
+### Add localhost CORS
+
+You need to enable CORS to localhost for your bucket.
+
+Go to Premissions tab in your S3 bucket, add the following in the COR
+
+```
+[
+    {
+        "AllowedHeaders": [
+            "*"
+        ],
+        "AllowedMethods": [
+            "GET",
+            "PUT",
+            "POST",
+            "DELETE",
+            "HEAD"
+        ],
+        "AllowedOrigins": [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000"
+        ],
+        "ExposeHeaders": [
+            "ETag",
+            "x-amz-request-id",
+            "x-amz-id-2"
+        ],
+        "MaxAgeSeconds": 3000
+    }
+]
+```
