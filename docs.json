@@ -22,9 +22,10 @@
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Guides",
             "pages": [
-              "essentials/reusable-snippets"
+              "essentials/reusable-snippets",
+              "essentials/setup-s3"
             ]
           }
         ]
