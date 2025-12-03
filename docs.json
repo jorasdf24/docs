@@ -25,7 +25,8 @@
             "group": "Guides",
             "pages": [
               "essentials/reusable-snippets",
-              "essentials/setup-s3"
+              "essentials/setup-s3",
+              "essentials/aws-gpu"
             ]
           }
         ]

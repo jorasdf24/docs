@@ -1,0 +1,754 @@
+---
+title: "Setting up GPU Processing with AWS Batch"
+description: "A complete guide for running GPU-accelerated point cloud processing on AWS Batch with Docker containers"
+---
+
+## Overview
+
+This guide walks you through setting up AWS Batch to run GPU-accelerated workloads in the cloud. You'll learn how to:
+
+- Set up AWS infrastructure for GPU computing
+- Package your code in Docker containers
+- Submit and monitor GPU jobs
+- Handle file storage with S3
+
+**Use case**: Running computationally intensive tasks (like point cloud matching) on powerful GPU instances without maintaining your own hardware.
+
+---
+
+## Prerequisites
+
+- AWS Account
+- Docker installed locally
+- AWS CLI installed locally
+- Python code that uses GPU (CuPy, PyTorch, etc.)
+
+---
+
+## Part 1: AWS Setup
+
+### Step 1: Create ECR Repository
+
+**What is ECR?** Elastic Container Registry stores your Docker images in AWS, similar to Docker Hub but integrated with AWS services.
+
+1. Go to AWS Console → Search "ECR" → **Elastic Container Registry**
+2. Click **"Create repository"**
+3. Repository name: `your-app-name` (e.g., `point-cloud-matcher`)
+4. Leave settings as default (Private)
+5. Click **"Create repository"**
+6. **Save the Repository URI** (e.g., `123456789012.dkr.ecr.us-east-1.amazonaws.com/your-app-name`)
+
+---
+
+### Step 2: Create IAM Roles
+
+**What are IAM Roles?** Roles define what permissions your AWS services have. We need 4 roles for AWS Batch.
+
+#### 2a. ECS Task Execution Role
+
+**Purpose**: Allows containers to pull Docker images from ECR and write logs.
+
+1. Go to **IAM** → **Roles** → **"Create role"**
+2. Select **"AWS service"** → Choose **"Elastic Container Service"**
+3. Select **"Elastic Container Service Task"** → **Next**
+4. Add policies:
+   - `AmazonECSTaskExecutionRolePolicy` ✓
+   - `AmazonS3FullAccess` ✓ (for file access)
+5. Role name: `ecsTaskExecutionRole`
+6. **Create role**
+7. **Important**: After creation, click the role → **"Trust relationships"** tab → **"Edit trust policy"**
+8. Replace with:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": [
+          "ecs-tasks.amazonaws.com",
+          "batch.amazonaws.com"
+        ]
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+9. **Update policy**
+
+#### 2b. ECS Instance Role
+
+**Purpose**: Allows EC2 GPU instances to join the ECS cluster and run containers.
+
+1. **IAM** → **Roles** → **"Create role"**
+2. Select **"AWS service"** → Choose **"EC2"**
+3. Add policies:
+   - `AmazonEC2ContainerServiceforEC2Role` ✓
+   - `AmazonEC2ContainerRegistryReadOnly` ✓
+4. Role name: `ecsInstanceRole`
+5. **Create role**
+
+#### 2c. Batch Service Role
+
+**Purpose**: Allows AWS Batch to manage EC2 instances on your behalf.
+
+1. **IAM** → **Roles** → **"Create role"**
+2. Select **"AWS service"** → Choose **"Batch"**
+3. Auto-selects `AWSBatchServiceRole` ✓
+4. Role name: `AWSBatchServiceRole`
+5. **Create role**
+
+#### 2d. CLI User (for local development)
+
+**Purpose**: Allows you to push Docker images and submit jobs from your computer.
+
+1. **IAM** → **Users** → **"Create user"**
+2. User name: `batch-cli-user`
+3. **Uncheck** console access (CLI only)
+4. **Next** → **"Attach policies directly"**
+5. Add policies:
+   - `AmazonEC2ContainerRegistryPowerUser` ✓
+   - `AWSBatchFullAccess` ✓
+   - `AmazonS3FullAccess` ✓
+6. **Create user**
+7. Click on the user → **"Security credentials"** tab → **"Create access key"**
+8. Select **"Command Line Interface (CLI)"** → Check confirmation → **Next**
+9. **Copy Access Key ID and Secret Access Key** (save securely!)
+
+**Configure AWS CLI:**
+
+```bash
+aws configure
+# Enter: Access Key ID
+# Enter: Secret Access Key
+# Enter: Default region (e.g., us-east-1)
+# Enter: Default output format (json)
+```
+
+---
+
+### Step 3: Create Security Group
+
+**What is a Security Group?** Acts as a firewall for your GPU instances.
+
+1. Go to **EC2** → **Security Groups** → **"Create security group"**
+2. Name: `batch-gpu-sg`
+3. Description: "Security group for GPU batch jobs"
+4. VPC: Select default VPC
+5. **Inbound rules**: Leave empty (no incoming connections needed)
+6. **Outbound rules**: Leave default (all traffic allowed)
+7. **Create security group**
+8. **Save the Security Group ID** (e.g., `sg-0123456789abcdef0`)
+
+---
+
+### Step 4: Create S3 Bucket
+
+**What is S3?** Simple Storage Service - stores your input/output files.
+
+1. Go to **S3** → **"Create bucket"**
+2. Bucket name: `your-app-jobs-yourname` (must be globally unique)
+3. Region: Same as your Batch setup
+4. **Block all public access**: Keep checked ✓
+5. **Create bucket**
+
+---
+
+### Step 5: Create Compute Environment
+
+**What is a Compute Environment?** Defines the GPU instances that will run your jobs.
+
+1. Go to **AWS Batch** → **Compute environments** → **"Create"**
+2. **Configuration:**
+   - Orchestration type: **Amazon Elastic Compute Cloud (Amazon EC2)**
+   - Name: `gpu-compute-env`
+3. **Instance configuration:**
+   - Service role: `AWSBatchServiceRole`
+   - Instance role: `ecsInstanceRole`
+4. **Instance types** (choose based on your needs):
+   - **g5.xlarge**: Best balance (NVIDIA A10G, \$1.01/hr) - Recommended
+   - **g6.xlarge**: Newer but limited availability (NVIDIA L4, \$0.84/hr)
+   - **g4dn.xlarge**: Older but widely available (NVIDIA T4, \$0.53/hr)
+5. **Networking:**
+   - VPC: Default VPC
+   - Subnets: **Check all available** ✓
+   - Security groups: `batch-gpu-sg`
+6. **Compute resources:**
+   - Minimum vCPUs: `0` (pay \$0 when idle!)
+   - Desired vCPUs: `0`
+   - Maximum vCPUs: `16` (or higher)
+7. **Create**
+8. Wait for status: **VALID** ✓
+
+**GPU Instance Comparison:**
+
+| Instance    | GPU         | vCPUs | RAM  | Performance | Availability  | Cost/hr |
+| ----------- | ----------- | ----- | ---- | ----------- | ------------- | ------- |
+| g5.xlarge   | NVIDIA A10G | 4     | 16GB | ⭐⭐⭐⭐⭐       | ✅✅✅ Excellent | \$1.01  |
+| g6.xlarge   | NVIDIA L4   | 4     | 16GB | ⭐⭐⭐⭐        | ⚠️ Limited    | \$0.84  |
+| g4dn.xlarge | NVIDIA T4   | 4     | 16GB | ⭐⭐⭐         | ✅✅✅ Excellent | \$0.53  |
+
+---
+
+### Step 6: Create Job Queue
+
+**What is a Job Queue?** A waiting line for your GPU jobs. Jobs submitted here are automatically assigned to available GPU instances.
+
+1. **AWS Batch** → **Job queues** → **"Create"**
+2. Name: `gpu-job-queue`
+3. Priority: `1`
+4. **Connected compute environments:**
+   - Click **"Add compute environment"**
+   - Select: `gpu-compute-env`
+   - Order: `1`
+5. **Create**
+
+---
+
+### Step 7: Create Job Definition
+
+**What is a Job Definition?** A template that tells AWS what to run (which Docker image, how much resources, etc.).
+
+1. **AWS Batch** → **Job definitions** → **"Create"**
+2. **General:**
+   - Orchestration type: **Amazon EC2**
+   - Name: `your-job-definition`
+   - Execution timeout: `7200` seconds (2 hours)
+3. **Retry strategy:**
+   - Attempts: `3`
+4. **Container:**
+   - Image: Your ECR URI (e.g., `123456789012.dkr.ecr.us-east-1.amazonaws.com/your-app:latest`)
+5. **Resources:**
+   - vCPUs: `4`
+   - Memory: `15000` MiB
+   - Click **"Add resource"** → Type: `GPU`, Value: `1`
+6. **Roles:**
+   - **Job role**: `ecsTaskExecutionRole` (allows container to access S3)
+   - **Execution role**: `ecsTaskExecutionRole` (allows pulling Docker image)
+7. **Create**
+
+---
+
+## Part 2: Docker Container Setup
+
+### Dockerfile Template
+
+Create a `Dockerfile` in your project folder:
+
+```dockerfile
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y python3-pip python3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+RUN pip3 install --no-cache-dir \
+    cupy-cuda11x \
+    numpy \
+    boto3 \
+    # Add your other dependencies here
+
+WORKDIR /app
+COPY . /app
+
+ENTRYPOINT ["python3", "your_script.py"]
+```
+
+**Key Points:**
+
+- Use NVIDIA CUDA base images for GPU support
+- Install all dependencies in the image
+- Copy all your code to `/app`
+- Set an entrypoint that accepts command-line arguments
+
+---
+
+### Container Script Template
+
+Create `process_job.py` (runs inside the container):
+
+```python
+#!/usr/bin/env python3
+import sys
+import argparse
+import boto3
+import numpy as np
+from pathlib import Path
+import json
+
+# Import your processing function
+from your_module import your_gpu_function
+
+def download_from_s3(bucket, key, local_path):
+    """Download file from S3"""
+    print(f"⬇ Downloading s3://{bucket}/{key}")
+    s3 = boto3.client('s3')
+    s3.download_file(bucket, key, local_path)
+
+def upload_to_s3(local_path, bucket, key):
+    """Upload file to S3"""
+    print(f"⬆ Uploading to s3://{bucket}/{key}")
+    s3 = boto3.client('s3')
+    s3.upload_file(local_path, bucket, key)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--bucket', required=True)
+    parser.add_argument('--job-id', required=True)
+    args = parser.parse_args()
+    
+    print("GPU BATCH JOB STARTING")
+    print(f"Job ID: {args.job_id}")
+    
+    # Create working directory
+    work_dir = Path('/tmp/work')
+    work_dir.mkdir(exist_ok=True)
+    
+    # Download input files
+    input_file = work_dir / 'input.npy'
+    download_from_s3(args.bucket, f"jobs/{args.job_id}/input/data.npy", str(input_file))
+    
+    # Load data
+    data = np.load(input_file)
+    
+    # Process on GPU
+    result = your_gpu_function(data)
+    
+    # Save results
+    metadata = {
+        'success': True,
+        'result': float(result)
+    }
+    
+    metadata_file = work_dir / 'result.json'
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    upload_to_s3(str(metadata_file), args.bucket, f"jobs/{args.job_id}/output/result.json")
+    
+    print("✅ JOB COMPLETE")
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())
+```
+
+---
+
+### Local Client Script Template
+
+Create `run_remote_job.py` (runs on your local machine):
+
+```python
+#!/usr/bin/env python3
+import boto3
+import time
+import json
+import numpy as np
+from pathlib import Path
+import uuid
+import tempfile
+
+class RemoteGPUJob:
+    def __init__(self, 
+                 bucket_name: str,
+                 job_queue: str = 'gpu-job-queue',
+                 job_definition: str = 'your-job-definition:1',
+                 region: str = 'us-east-1'):
+        
+        self.bucket_name = bucket_name
+        self.job_queue = job_queue
+        self.job_definition = job_definition
+        self.region = region
+        
+        self.s3 = boto3.client('s3', region_name=region)
+        self.batch = boto3.client('batch', region_name=region)
+    
+    def run(self, input_data, output_dir='./results'):
+        # Generate unique job ID
+        job_id = f"job-{uuid.uuid4().hex[:8]}"
+        
+        print(f"🚀 Starting Remote GPU Job: {job_id}")
+        
+        # Step 1: Upload data to S3
+        print("📤 Uploading data...")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            input_file = tmpdir / 'input.npy'
+            np.save(input_file, input_data)
+            self.s3.upload_file(str(input_file), self.bucket_name, f"jobs/{job_id}/input/data.npy")
+        
+        # Step 2: Submit job
+        print("📋 Submitting job...")
+        response = self.batch.submit_job(
+            jobName=job_id,
+            jobQueue=self.job_queue,
+            jobDefinition=self.job_definition,
+            containerOverrides={
+                'command': [
+                    '--bucket', self.bucket_name,
+                    '--job-id', job_id
+                ]
+            }
+        )
+        batch_job_id = response['jobId']
+        
+        # Step 3: Monitor job
+        print("⏳ Running on GPU...")
+        while True:
+            response = self.batch.describe_jobs(jobs=[batch_job_id])
+            status = response['jobs'][0]['status']
+            
+            if status == 'SUCCEEDED':
+                print("✅ Job completed!")
+                break
+            elif status in ['FAILED', 'CANCELLED']:
+                print(f"❌ Job {status}")
+                return None
+            
+            time.sleep(10)
+        
+        # Step 4: Download results
+        print("📥 Downloading results...")
+        output_path = Path(output_dir)
+        output_path.mkdir(exist_ok=True, parents=True)
+        
+        result_json = output_path / f'result_{job_id}.json'
+        self.s3.download_file(self.bucket_name, f"jobs/{job_id}/output/result.json", str(result_json))
+        
+        with open(result_json, 'r') as f:
+            metadata = json.load(f)
+        
+        return metadata
+
+# Usage
+if __name__ == '__main__':
+    job = RemoteGPUJob(bucket_name='your-bucket-name')
+    
+    # Your input data
+    data = np.random.rand(1000, 2)
+    
+    # Run on GPU
+    result = job.run(data)
+    print(f"Result: {result}")
+```
+
+---
+
+## Part 3: Docker Commands
+
+### Build and Push Workflow
+
+```bash
+# Navigate to your project folder
+cd your-project-folder
+
+# Build Docker image
+docker build -t your-app-name .
+
+# Test locally (optional)
+docker run --rm your-app-name --help
+
+# Get your AWS account ID
+aws sts get-caller-identity --query Account --output text
+
+# Login to ECR
+aws ecr get-login-password --region us-east-1 | \
+    docker login --username AWS --password-stdin \
+    YOUR_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
+
+# Tag image for ECR
+docker tag your-app-name:latest \
+    YOUR_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/your-app-name:latest
+
+# Push to ECR
+docker push YOUR_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/your-app-name:latest
+```
+
+### Useful Docker Commands
+
+```bash
+# List local images
+docker images
+
+# Remove old images
+docker rmi IMAGE_ID
+
+# View image layers and size
+docker history your-app-name:latest
+
+# Test container with GPU locally (if you have NVIDIA GPU)
+docker run --gpus all your-app-name
+
+# Enter container for debugging
+docker run -it --entrypoint /bin/bash your-app-name
+
+# Check container size
+docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+
+# Clean up unused images/containers
+docker system prune -a
+```
+
+---
+
+## Part 4: Optimization Tips
+
+### Reduce Cold Start Time (Currently ~131 seconds)
+
+**Option 1: Pre-warm Instances** (Instant start, but costs ~\$1/hr when idle)
+
+```
+Compute Environment → Edit → Desired vCPUs: 4
+```
+
+**Option 2: Optimize Docker Image** (Saves ~20-40s)
+
+```dockerfile
+# Minimize layers
+RUN apt-get update && \
+    apt-get install -y package1 package2 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Pin package versions
+RUN pip3 install numpy==1.24.3 cupy-cuda11x==12.3.0
+```
+
+**Option 3: Compress Data** (Saves ~30-40s on transfer)
+
+```python
+# Instead of np.save(), use:
+np.savez_compressed('data.npz', data=your_array)
+
+# Load with:
+data = np.load('data.npz')['data']
+```
+
+### Handle Large Data
+
+For large point clouds or datasets that cause GPU memory errors:
+
+```python
+def process_in_batches(large_array, batch_size=1000):
+    """Process large arrays in smaller batches"""
+    n_batches = (len(large_array) + batch_size - 1) // batch_size
+    results = []
+    
+    for i in range(n_batches):
+        start = i * batch_size
+        end = min((i + 1) * batch_size, len(large_array))
+        batch = large_array[start:end]
+        
+        # Process batch
+        result = process_batch(batch)
+        results.append(result)
+    
+    return np.concatenate(results)
+```
+
+---
+
+## Part 5: Monitoring and Debugging
+
+### View Job Logs
+
+1. **AWS Batch** → **Jobs** → Click your job
+2. Wait for status: **RUNNING**
+3. Click the **"Log stream name"** link
+4. Opens CloudWatch logs with real-time output
+
+### Check Job Status via CLI
+
+```bash
+# List recent jobs
+aws batch list-jobs --job-queue gpu-job-queue --job-status RUNNING
+
+# Get job details
+aws batch describe-jobs --jobs JOB_ID
+
+# View logs
+aws logs tail /aws/batch/job --follow --log-stream-name LOG_STREAM_NAME
+```
+
+### Common Issues
+
+**Issue: Job stuck at RUNNABLE for \>10 minutes**
+
+- Check GPU quota: Service Quotas → "Running On-Demand G and VT instances"
+- Try different instance type (g4dn instead of g6)
+- Check compute environment status for errors
+
+**Issue: 403 Forbidden when accessing S3**
+
+- Verify Job Role is set in job definition
+- Check ecsTaskExecutionRole has S3 permissions
+- Verify trust policy includes `ecs-tasks.amazonaws.com`
+
+**Issue: Out of Memory on GPU**
+
+- Reduce batch size in your code
+- Use data compression
+- Downsample large datasets before processing
+- Consider larger GPU instance (g5.2xlarge)
+
+**Issue: Container exits immediately**
+
+- Check CloudWatch logs for Python errors
+- Verify all dependencies are installed in Dockerfile
+- Test container locally first
+
+---
+
+## Part 6: Cost Management
+
+### Estimate Costs
+
+```
+GPU Instance: $0.50-$1.00/hour (only when running)
+S3 Storage: $0.023/GB/month
+Data Transfer: First 100GB free/month
+ECR Storage: $0.10/GB/month
+```
+
+**Example**: 10 jobs/day, 5 minutes each
+
+- GPU time: 10 × 5min × $1/hr = $0.83/day = \$25/month
+- S3 (10GB): \$0.23/month
+- **Total: ~\$26/month**
+
+### Cost Optimization
+
+1. **Set Minimum vCPUs to 0** - Pay nothing when idle
+2. **Use Spot Instances** - Up to 90% discount (may be interrupted)
+3. **Compress data** - Reduce S3 storage and transfer costs
+4. **Delete old job data** - Clean up S3 regularly
+5. **Use appropriate GPU** - Don't use g5 if g4dn suffices
+
+### Auto-cleanup S3
+
+Add to your client script:
+
+```python
+def cleanup_s3(self, job_id):
+    """Delete all files for completed job"""
+    prefix = f"jobs/{job_id}/"
+    paginator = self.s3.get_paginator('list_objects_v2')
+    
+    for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+        if 'Contents' not in page:
+            continue
+        objects = [{'Key': obj['Key']} for obj in page['Contents']]
+        if objects:
+            self.s3.delete_objects(Bucket=self.bucket_name, Delete={'Objects': objects})
+```
+
+---
+
+## Part 7: Advanced Configuration
+
+### Service Quotas
+
+Check and increase if needed:
+
+- **Service Quotas** → Search "EC2"
+- **"Running On-Demand G and VT instances"**
+- Default is often 4 vCPUs (1 g5.xlarge)
+- Request increase to 16+ for multiple jobs
+
+### Using Different Regions
+
+GPU availability varies by region:
+
+- **Best availability**: us-east-1, us-west-2, eu-west-1
+- **G5 available**: us-east-1, us-east-2, us-west-2, eu-west-2, eu-central-1
+- **G6 limited**: Only in select regions
+
+### Multi-node Jobs
+
+For very large workloads:
+
+```python
+# Job definition with multiple nodes
+containerProperties={
+    ...
+    'resourceRequirements': [
+        {'type': 'GPU', 'value': '4'}  # 4 GPUs
+    ]
+}
+
+# Or use multi-node parallel jobs
+nodeProperties={
+    'numNodes': 4,
+    'mainNode': 0,
+    'nodeRangeProperties': [...]
+}
+```
+
+---
+
+## Quick Reference
+
+### AWS CLI Commands
+
+```bash
+# ECR
+aws ecr describe-repositories
+aws ecr describe-images --repository-name your-app
+
+# Batch
+aws batch describe-compute-environments
+aws batch describe-job-queues
+aws batch describe-job-definitions --job-definition-name your-job
+aws batch list-jobs --job-queue gpu-job-queue --job-status RUNNING
+aws batch submit-job --job-name test --job-queue gpu-job-queue --job-definition your-job:1
+
+# S3
+aws s3 ls s3://your-bucket/
+aws s3 cp local-file.txt s3://your-bucket/
+aws s3 rm s3://your-bucket/file.txt
+aws s3 rb s3://your-bucket --force  # Delete bucket
+
+# IAM
+aws iam list-roles
+aws iam get-role --role-name ecsTaskExecutionRole
+```
+
+### Environment Variables
+
+Add to your `.env`:
+
+```bash
+AWS_REGION=us-east-1
+AWS_ACCOUNT_ID=123456789012
+AWS_S3_BUCKET_NAME=your-bucket-name
+AWS_ECR_REPOSITORY=your-app-name
+AWS_BATCH_JOB_QUEUE=gpu-job-queue
+AWS_BATCH_JOB_DEFINITION=your-job-definition:1
+```
+
+---
+
+## Summary
+
+**You've now set up:**
+
+- ✅ GPU compute environment on AWS
+- ✅ Docker container for your code
+- ✅ Automated job submission and monitoring
+- ✅ S3 integration for file handling
+- ✅ Cost-effective scaling (pay only when running)
+
+**Next steps:**
+
+1. Test with a simple job
+2. Monitor costs in AWS Cost Explorer
+3. Optimize Docker image and data transfer
+4. Set up automated cleanup
+5. Consider CI/CD for automatic deployment
+
+**Support:** AWS has extensive documentation at https://docs.aws.amazon.com/batch/
